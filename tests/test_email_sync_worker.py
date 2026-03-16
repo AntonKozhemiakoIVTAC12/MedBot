@@ -26,6 +26,7 @@ class _FakeImapClient:
     def __init__(self, *, abort_on_fetch: bool, raw_message: bytes) -> None:
         self._abort_on_fetch = abort_on_fetch
         self._raw_message = raw_message
+        self.search_args: tuple[object, ...] | None = None
 
     def login(self, username: str, password: str):
         return "OK", [b"logged in"]
@@ -35,6 +36,7 @@ class _FakeImapClient:
 
     def uid(self, command: str, *args):
         if command == "search":
+            self.search_args = args
             return "OK", [b"100"]
         if command == "fetch":
             if self._abort_on_fetch:
@@ -313,6 +315,52 @@ class EmailSyncWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fetched[0].uid, "100")
         self.assertEqual(fetched[0].sender, "srs@invitro.ru")
         self.assertEqual(len(fetched[0].attachments), 1)
+
+    def test_retries_imap_connect_after_connection_refused(self) -> None:
+        raw_message = (
+            b"From: srs@invitro.ru\r\n"
+            b"Subject: =?UTF-8?B?0JvQsNCx0L7RgNCw0YLQvtGA0LjRjyDQmNCd0JLQmNCi0KDQni4g0KDQtdC3?=\r\n"
+            b" =?UTF-8?B?0YPQu9GM0YLQsNGC0Ysg0LDQvdCw0LvQuNC30L7Qsi4=?=\r\n"
+            b"Date: Mon, 16 Mar 2026 21:18:44 +0300\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: multipart/mixed; boundary=test-boundary\r\n"
+            b"\r\n"
+            b"--test-boundary\r\n"
+            b"Content-Type: application/pdf; name=\"sample.pdf\"\r\n"
+            b"Content-Disposition: attachment; filename=\"sample.pdf\"\r\n"
+            b"Content-Transfer-Encoding: base64\r\n"
+            b"\r\n"
+            b"ZmFrZS1wZGY=\r\n"
+            b"--test-boundary--\r\n"
+        )
+        client = _FakeImapClient(abort_on_fetch=False, raw_message=raw_message)
+        calls = iter([ConnectionRefusedError("connection refused"), client])
+
+        def create_client():
+            value = next(calls)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        self.worker._create_imap_client = create_client
+
+        fetched = self.worker._fetch_new_messages(set())
+
+        self.assertEqual(len(fetched), 1)
+        self.assertEqual(fetched[0].uid, "100")
+        self.assertEqual(fetched[0].sender, "srs@invitro.ru")
+
+    def test_searches_only_newer_numeric_uids(self) -> None:
+        self.assertEqual(
+            self.worker._build_uid_search_args({"98", "99", "100"}),
+            (None, "UID", "101:*"),
+        )
+
+    def test_searches_all_when_known_uids_are_not_numeric(self) -> None:
+        self.assertEqual(
+            self.worker._build_uid_search_args({"uid-1", "uid-2"}),
+            (None, "ALL"),
+        )
 
     def test_accepts_invitro_emails_by_subject_or_sender(self) -> None:
         self.worker.settings.mail_allowed_subject_fragment = "Лаборатория ИНВИТРО. Результаты анализов."

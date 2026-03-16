@@ -105,18 +105,26 @@ class EmailSyncWorker:
             return {row[0] for row in result}
 
     def _fetch_new_messages(self, known_uids: set[str]) -> list[FetchedEmail]:
-        last_error: imaplib.IMAP4.abort | None = None
+        last_error: Exception | None = None
         for attempt in range(1, self._imap_fetch_attempts + 1):
             try:
                 return self._fetch_new_messages_once(known_uids)
-            except imaplib.IMAP4.abort as error:
+            except (imaplib.IMAP4.abort, OSError) as error:
                 last_error = error
-                logger.warning(
-                    "IMAP fetch attempt %s/%s failed with connection abort: %s",
-                    attempt,
-                    self._imap_fetch_attempts,
-                    error,
-                )
+                if isinstance(error, imaplib.IMAP4.abort):
+                    logger.warning(
+                        "IMAP fetch attempt %s/%s failed with connection abort: %s",
+                        attempt,
+                        self._imap_fetch_attempts,
+                        error,
+                    )
+                else:
+                    logger.warning(
+                        "IMAP fetch attempt %s/%s failed with network error: %s",
+                        attempt,
+                        self._imap_fetch_attempts,
+                        error,
+                    )
                 if attempt == self._imap_fetch_attempts:
                     raise
 
@@ -138,7 +146,10 @@ class EmailSyncWorker:
             if select_status != "OK":
                 raise RuntimeError(f"Unable to select folder {self.settings.mail_folder!r}.")
 
-            search_status, data = client.uid("search", None, "ALL")
+            search_status, data = client.uid(
+                "search",
+                *self._build_uid_search_args(known_uids),
+            )
             if search_status != "OK":
                 raise RuntimeError("Unable to search IMAP messages.")
 
@@ -188,6 +199,18 @@ class EmailSyncWorker:
             host=self.settings.mail_imap_host,
             port=self.settings.mail_imap_port,
         )
+
+    @staticmethod
+    def _build_uid_search_args(known_uids: set[str]) -> tuple[str | None, ...]:
+        if not known_uids:
+            return (None, "ALL")
+
+        numeric_uids = [int(uid) for uid in known_uids if uid.isdigit()]
+        if len(numeric_uids) != len(known_uids):
+            return (None, "ALL")
+
+        next_uid = max(numeric_uids) + 1
+        return (None, "UID", f"{next_uid}:*")
 
     async def _store_email(self, fetched_email: FetchedEmail) -> bool:
         async with self.session_factory() as session:
