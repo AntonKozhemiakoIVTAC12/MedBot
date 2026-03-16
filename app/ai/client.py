@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from typing import Any
 from uuid import uuid4
 
-import httpx
-
 from app.config import Settings
+
+if TYPE_CHECKING:
+    import httpx
 
 _SYSTEM_PROMPT = (
     "Ты помощник, который дает только осторожные общие комментарии по лабораторным "
@@ -36,12 +38,22 @@ class GigaChatConfigurationError(GigaChatClientError):
     """Raised when GigaChat credentials are missing."""
 
 
+def _require_httpx():
+    try:
+        import httpx
+    except ModuleNotFoundError as error:
+        raise GigaChatConfigurationError(
+            "Для советов ИИ не установлена зависимость httpx."
+        ) from error
+    return httpx
+
+
 class GigaChatClient:
     def __init__(
         self,
         settings: Settings,
         *,
-        http_client: httpx.AsyncClient | None = None,
+        http_client: "httpx.AsyncClient | None" = None,
     ) -> None:
         self._settings = settings
         self._http_client = http_client
@@ -60,6 +72,7 @@ class GigaChatClient:
                 "GigaChat не настроен. Заполните GIGACHAT_AUTHORIZATION_KEY."
             )
 
+        httpx = _require_httpx()
         managed_client = self._http_client is None
         client = self._http_client or httpx.AsyncClient(
             timeout=self._settings.gigachat_timeout_seconds
@@ -94,7 +107,8 @@ class GigaChatClient:
             raise GigaChatClientError("GigaChat вернул пустой ответ.")
         return self._finalize_recommendation(content)
 
-    async def _request_access_token(self, client: httpx.AsyncClient) -> str:
+    async def _request_access_token(self, client: "httpx.AsyncClient") -> str:
+        httpx = _require_httpx()
         try:
             response = await client.post(
                 self._settings.gigachat_auth_url,
@@ -178,7 +192,8 @@ class GigaChatClient:
         return f"{compact[: limit - 1].rstrip()}…"
 
     @staticmethod
-    def _format_http_error(error: httpx.HTTPError) -> str:
+    def _format_http_error(error: Exception) -> str:
+        httpx = _require_httpx()
         if isinstance(error, httpx.HTTPStatusError):
             try:
                 details = error.response.text.strip()
