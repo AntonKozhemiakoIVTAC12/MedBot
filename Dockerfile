@@ -17,4 +17,4 @@ RUN pip install --upgrade pip \
 
 RUN mkdir -p /data/reports
 
-CMD ["uvicorn", "app.web:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "app.run_bot"]
