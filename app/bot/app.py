@@ -1,3 +1,11 @@
+import asyncio
+import logging
+import sys
+from pathlib import Path
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from aiogram import Bot, Dispatcher
 
 from app.ai.client import GigaChatClient
@@ -34,3 +42,12 @@ async def start_bot() -> None:
         )
     finally:
         await bot.session.close()
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(start_bot())
+
+
+if __name__ == "__main__":
+    main()
