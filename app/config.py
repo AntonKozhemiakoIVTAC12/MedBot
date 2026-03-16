@@ -1,14 +1,13 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
+class Settings(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
         extra="ignore",
     )
 
@@ -77,6 +76,30 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    settings = Settings()
+    settings = Settings(**_load_settings_values())
     settings.reports_dir.mkdir(parents=True, exist_ok=True)
     return settings
+
+
+def _load_settings_values() -> dict[str, str]:
+    values = _read_env_file(Path(".env"))
+    for field_name, field_info in Settings.model_fields.items():
+        env_name = field_info.alias or field_name
+        env_value = os.getenv(env_name)
+        if env_value is not None:
+            values[env_name] = env_value
+    return values
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
