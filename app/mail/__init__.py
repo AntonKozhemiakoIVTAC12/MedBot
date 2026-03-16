@@ -1,0 +1,1 @@
+"""Mail sync package."""

@@ -1,0 +1,17 @@
+.env
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.py[cod]
+*.sqlite3
+*.db
+data/
+.DS_Store
+Thumbs.db
+Message17736654651855741137.eml
+872488625_344581031_0_ЦЫГАНКОВА.pdf
