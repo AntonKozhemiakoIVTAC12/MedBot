@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import load_only, selectinload
 
 from app.db.models import AIRecommendation, Attachment, FamilyMember, LabReport, ReportType
+from app.parsers import PdfParser
 
 
 _CATEGORY_LABELS: dict[str, str] = {
@@ -16,6 +17,8 @@ _CATEGORY_LABELS: dict[str, str] = {
     "urine": "Анализы мочи",
     "biochemistry": "Биохимия",
     "hormones": "Гормоны",
+    "infections": "Инфекции и антитела",
+    "microelements": "Микроэлементы",
     "other": "Прочее",
 }
 _CATEGORY_TYPES: dict[str, tuple[ReportType, ...]] = {
@@ -23,6 +26,8 @@ _CATEGORY_TYPES: dict[str, tuple[ReportType, ...]] = {
     "urine": (ReportType.URINE,),
     "biochemistry": (ReportType.BIOCHEMISTRY,),
     "hormones": (ReportType.HORMONES,),
+    "infections": (ReportType.INFECTIONS,),
+    "microelements": (ReportType.MICROELEMENTS,),
     "other": (ReportType.OTHER, ReportType.UNKNOWN),
 }
 _CATEGORY_ORDER: tuple[str, ...] = tuple(_CATEGORY_LABELS)
@@ -39,6 +44,12 @@ _SUMMARY_KEYS: tuple[str, ...] = (
     "conclusion",
     "notes",
 )
+_PLACEHOLDER_TITLE_FRAGMENTS: tuple[str, ...] = (
+    "исследование результат",
+    "референсные",
+    "комментарий",
+)
+_TITLE_PARSER = PdfParser()
 
 
 @dataclass(slots=True)
@@ -222,6 +233,10 @@ class ReportService:
             return "biochemistry"
         if report_type == ReportType.HORMONES:
             return "hormones"
+        if report_type == ReportType.INFECTIONS:
+            return "infections"
+        if report_type == ReportType.MICROELEMENTS:
+            return "microelements"
         return "other"
 
     async def _fetch_reports(self, statement: Select[tuple[LabReport]]) -> list[LabReport]:
@@ -242,6 +257,7 @@ class ReportService:
                     LabReport.report_date,
                     LabReport.recognized_patient_name,
                     LabReport.summary_json,
+                    LabReport.source_text,
                     LabReport.created_at,
                 ),
                 selectinload(LabReport.attachment).load_only(
@@ -279,7 +295,13 @@ class ReportService:
             for key in _TITLE_KEYS:
                 value = report.summary_json.get(key)
                 if isinstance(value, str) and value.strip():
-                    return self._clean_text(value, 80)
+                    cleaned = self._clean_text(value, 80)
+                    if not self._looks_like_placeholder_title(cleaned):
+                        return cleaned
+
+        extracted = self._title_from_source_text(report.__dict__.get("source_text", ""))
+        if extracted:
+            return extracted
 
         if report.attachment and report.attachment.filename:
             return self._clean_text(Path(report.attachment.filename).stem.replace("_", " "), 80)
@@ -340,3 +362,16 @@ class ReportService:
         if len(compact) <= limit:
             return compact
         return f"{compact[: limit - 1].rstrip()}…"
+
+    @staticmethod
+    def _looks_like_placeholder_title(value: str) -> bool:
+        normalized = value.lower().replace("ё", "е")
+        return any(fragment in normalized for fragment in _PLACEHOLDER_TITLE_FRAGMENTS)
+
+    def _title_from_source_text(self, source_text: str) -> str | None:
+        if not source_text.strip():
+            return None
+        parsed = _TITLE_PARSER.parse_text(source_text)
+        if parsed.report_title:
+            return self._clean_text(parsed.report_title, 80)
+        return None

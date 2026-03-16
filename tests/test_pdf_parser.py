@@ -73,6 +73,59 @@ class PdfParserTests(unittest.TestCase):
         self.assertEqual(parsed.report_date, datetime(2025, 12, 3))
         self.assertEqual(parsed.report_type, ReportType.BLOOD)
 
+    def test_classifies_infection_panels_separately_from_biochemistry(self) -> None:
+        parsed = self.parser.parse_text(
+            extracted_text=(
+                "ЦЫГАНКОВА ТАТЬЯНА ИВАНОВНА\n"
+                "anti-Helicobacter pylori IgM 34.0 отн. ед/мл\n"
+                "Тест-система: GAP -IgM\n"
+            ),
+            source_path=Path("infection.pdf"),
+        )
+
+        self.assertEqual(parsed.report_type, ReportType.INFECTIONS)
+        self.assertEqual(parsed.report_title, "anti-Helicobacter pylori IgM")
+
+    def test_classifies_microelements_separately_from_biochemistry(self) -> None:
+        parsed = self.parser.parse_text(
+            extracted_text=(
+                "ЦЫГАНКОВА ТАТЬЯНА ИВАНОВНА\n"
+                "Медь (сыворотка) 1.16 мкг/мл\n"
+                "Йод (сыворотка) 0.06 мкг/мл\n"
+            ),
+            source_path=Path("microelements.pdf"),
+        )
+
+        self.assertEqual(parsed.report_type, ReportType.MICROELEMENTS)
+        self.assertEqual(parsed.report_title, "Медь (сыворотка)")
+
+    def test_ignores_table_header_when_extracting_title(self) -> None:
+        parsed = self.parser.parse_text(
+            extracted_text=(
+                "ЦЫГАНКОВА ТАТЬЯНА ИВАНОВНА\n"
+                "Исследование Результат Единицы Референсные значения\n"
+                "Клинический анализ крови\n"
+                "Гемоглобин 11.2 г/дл\n"
+            ),
+            source_path=Path("cbc.pdf"),
+        )
+
+        self.assertEqual(parsed.report_title, "Клинический анализ крови")
+
+    def test_ignores_address_lines_when_extracting_title(self) -> None:
+        parsed = self.parser.parse_text(
+            extracted_text=(
+                "ЦЫГАНКОВА ТАТЬЯНА ИВАНОВНА\n"
+                "ООО \"ЭНТРАДА\"\n"
+                "Сочи, ул. Кирова, д. 30\n"
+                "Комплекс Паразиты\n"
+                "anti-Opisthorchis IgG отрицат.\n"
+            ),
+            source_path=Path("parasites.pdf"),
+        )
+
+        self.assertEqual(parsed.report_title, "Комплекс Паразиты")
+
     def test_does_not_treat_medical_terms_as_patient_name(self) -> None:
         parsed = self.parser.parse_text(
             extracted_text=(

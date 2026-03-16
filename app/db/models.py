@@ -27,6 +27,8 @@ class ReportType(StrEnum):
     URINE = "urine"
     BIOCHEMISTRY = "biochemistry"
     HORMONES = "hormones"
+    INFECTIONS = "infections"
+    MICROELEMENTS = "microelements"
     OTHER = "other"
     UNKNOWN = "unknown"
 

@@ -80,6 +80,48 @@ _PERSON_STOP_WORDS = {
     "тромбоциты",
     "холестерин",
 }
+_TITLE_STOP_PREFIXES = (
+    "дата ",
+    "перейти на исходный",
+    "документ результатов",
+    "лабораторного тестирования",
+    "пол:",
+    "возраст:",
+    "инз:",
+    "врач:",
+    "стр.",
+    "8 (800)",
+    ", офис",
+    "сочи, ул.",
+    "значения",
+    "комментарий",
+    "коммента",
+)
+_TITLE_STOP_CONTAINS = (
+    "исполнитель",
+    "результаты исследований не являются диагнозом",
+    "внимание!",
+    "www.invitro.ru",
+    "ооо \"энтрада\"",
+    "исследование результат",
+    "референсные значения",
+    "референсные",
+)
+_TITLE_RESULT_SPLIT_RE = re.compile(
+    r"(?=\s(?:\d|отрицат|положит|сомнит|см\.комм|высокий|низкий|тест-система|оборудование|референсные))",
+    re.IGNORECASE,
+)
+_TITLE_CONTINUATION_WORDS = {
+    "в",
+    "во",
+    "на",
+    "по",
+    "из",
+    "для",
+    "при",
+    "с",
+    "со",
+}
 _MONTHS = {
     "января": 1,
     "февраля": 2,
@@ -112,6 +154,39 @@ _REPORT_TYPE_KEYWORDS: tuple[tuple[ReportType, tuple[str, ...]], ...] = (
             "инсулин",
             "лг",
             "фсг",
+        ),
+    ),
+    (
+        ReportType.INFECTIONS,
+        (
+            "anti-",
+            "антител",
+            "антитела",
+            "авидность",
+            "ebv",
+            "cmv",
+            "cytomegalovirus",
+            "helicobacter",
+            "pylori",
+            "opisthorchis",
+            "echinococcus",
+            "toxocara",
+            "trichinella",
+            "паразит",
+            "igg",
+            "igm",
+            "iga",
+        ),
+    ),
+    (
+        ReportType.MICROELEMENTS,
+        (
+            "медь",
+            "йод",
+            "селен",
+            "цинк",
+            "сыворотка",
+            "микроэлемент",
         ),
     ),
     (
@@ -254,26 +329,24 @@ class PdfParser:
         if not text:
             return None
 
-        for line in text.splitlines():
-            stripped = line.strip()
-            if not stripped or len(stripped) > 120:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for index, stripped in enumerate(lines):
+            if len(stripped) > 160:
                 continue
 
             normalized = self._normalize_for_matching(stripped)
-            if normalized.startswith("дата "):
+            if self._should_skip_title_line(normalized):
                 continue
-            if normalized.startswith("перейти на исходный"):
+
+            if _FULL_NAME_PATTERN.fullmatch(stripped) and self._is_plausible_person_name(
+                self._normalize_person_name(stripped),
+                strict=False,
+            ):
                 continue
-            if normalized.startswith("документ результатов"):
-                continue
-            if normalized.startswith("лабораторного тестирования"):
-                continue
-            if "исполнитель" in normalized:
-                continue
-            if "результаты исследований не являются диагнозом" in normalized:
-                continue
-            if "анализ" in normalized or "исследование" in normalized:
-                return self._clean_title(stripped)
+
+            candidate = self._compose_title_candidate(lines, index)
+            if candidate:
+                return candidate
 
         return None
 
@@ -295,6 +368,27 @@ class PdfParser:
 
         return best_type if best_score > 0 else ReportType.OTHER
 
+    def _compose_title_candidate(self, lines: list[str], index: int) -> str | None:
+        parts = [lines[index]]
+        last_word = parts[0].split()[-1].lower().replace("ё", "е")
+        if index + 1 < len(lines) and last_word in _TITLE_CONTINUATION_WORDS:
+            next_line = lines[index + 1].strip()
+            normalized_next = self._normalize_for_matching(next_line)
+            if (
+                next_line
+                and not self._should_skip_title_line(normalized_next)
+                and not any(char.isdigit() for char in next_line)
+                and len(next_line) <= 80
+            ):
+                parts.append(next_line)
+
+        candidate = " ".join(parts)
+        candidate = _TITLE_RESULT_SPLIT_RE.split(candidate, maxsplit=1)[0]
+        candidate = self._clean_title(candidate)
+        if len(candidate) < 4:
+            return None
+        return candidate
+
     @staticmethod
     def _normalize_text(text: str) -> str:
         lines = [PdfParser._strip_line(line) for line in text.splitlines()]
@@ -308,6 +402,14 @@ class PdfParser:
     @staticmethod
     def _normalize_for_matching(text: str) -> str:
         return PdfParser._strip_line(text).lower().replace("ё", "е")
+
+    @staticmethod
+    def _should_skip_title_line(normalized: str) -> bool:
+        if any(normalized.startswith(prefix) for prefix in _TITLE_STOP_PREFIXES):
+            return True
+        if "ул." in normalized and "д." in normalized:
+            return True
+        return any(fragment in normalized for fragment in _TITLE_STOP_CONTAINS)
 
     @staticmethod
     def _normalize_person_name(name: str) -> str:

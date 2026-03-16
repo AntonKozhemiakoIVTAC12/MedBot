@@ -49,6 +49,8 @@ class ReportServiceTests(unittest.IsolatedAsyncioTestCase):
                 "urine": 0,
                 "biochemistry": 1,
                 "hormones": 0,
+                "infections": 0,
+                "microelements": 0,
                 "other": 1,
             },
         )

@@ -75,7 +75,8 @@ class GigaChatClient:
         httpx = _require_httpx()
         managed_client = self._http_client is None
         client = self._http_client or httpx.AsyncClient(
-            timeout=self._settings.gigachat_timeout_seconds
+            timeout=self._settings.gigachat_timeout_seconds,
+            verify=self._settings.gigachat_verify_ssl,
         )
 
         try:

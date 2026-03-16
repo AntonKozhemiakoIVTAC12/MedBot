@@ -30,7 +30,10 @@ from app.parsers import ParsedPdf, PdfParser
 logger = logging.getLogger(__name__)
 
 _FILENAME_SANITIZER = re.compile(r"[^A-Za-z0-9._-]+")
-_FILENAME_FAMILY_NAME_RE = re.compile(r"_(?P<family>[А-ЯЁA-Z-]+)\.pdf$", re.IGNORECASE)
+_FILENAME_FAMILY_NAME_RE = re.compile(
+    r"_(?P<family>[А-ЯЁA-Z-]+)(?:\s*\(\d+\))?\.pdf$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -59,6 +62,7 @@ class EmailSyncWorker:
         self.session_factory = session_factory
         self.poll_interval_seconds = settings.mail_poll_interval_seconds
         self._pdf_parser = PdfParser()
+        self._imap_fetch_attempts = 3
 
     async def run_forever(self) -> None:
         logger.info(
@@ -101,10 +105,27 @@ class EmailSyncWorker:
             return {row[0] for row in result}
 
     def _fetch_new_messages(self, known_uids: set[str]) -> list[FetchedEmail]:
-        client = imaplib.IMAP4_SSL(
-            host=self.settings.mail_imap_host,
-            port=self.settings.mail_imap_port,
-        )
+        last_error: imaplib.IMAP4.abort | None = None
+        for attempt in range(1, self._imap_fetch_attempts + 1):
+            try:
+                return self._fetch_new_messages_once(known_uids)
+            except imaplib.IMAP4.abort as error:
+                last_error = error
+                logger.warning(
+                    "IMAP fetch attempt %s/%s failed with connection abort: %s",
+                    attempt,
+                    self._imap_fetch_attempts,
+                    error,
+                )
+                if attempt == self._imap_fetch_attempts:
+                    raise
+
+        if last_error is not None:
+            raise last_error
+        return []
+
+    def _fetch_new_messages_once(self, known_uids: set[str]) -> list[FetchedEmail]:
+        client = self._create_imap_client()
         try:
             login_status, _ = client.login(
                 self.settings.mail_username,
@@ -161,6 +182,12 @@ class EmailSyncWorker:
                 client.logout()
             except imaplib.IMAP4.error:
                 pass
+
+    def _create_imap_client(self) -> imaplib.IMAP4_SSL:
+        return imaplib.IMAP4_SSL(
+            host=self.settings.mail_imap_host,
+            port=self.settings.mail_imap_port,
+        )
 
     async def _store_email(self, fetched_email: FetchedEmail) -> bool:
         async with self.session_factory() as session:
@@ -295,7 +322,8 @@ class EmailSyncWorker:
 
         member = await self._find_existing_member_by_family_name(session, family_name)
         if member is None:
-            return None, family_name
+            member = await self._get_or_create_family_member(session, family_name)
+            return member, family_name
 
         return member, member.full_name
 
@@ -310,6 +338,16 @@ class EmailSyncWorker:
         )
         if existing is not None:
             return existing
+
+        family_name = full_name.split()[0] if full_name.split() else full_name
+        fallback_match = await self._find_existing_member_by_family_name(session, family_name)
+        if fallback_match is not None:
+            if len(fallback_match.full_name.split()) < len(full_name.split()):
+                fallback_match.full_name = full_name
+                fallback_match.normalized_name = normalized_name
+                fallback_match.display_name = full_name
+                await session.flush()
+            return fallback_match
 
         member = FamilyMember(
             full_name=full_name,

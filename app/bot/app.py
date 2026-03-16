@@ -7,6 +7,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from aiogram import Bot, Dispatcher
+from aiogram.exceptions import TelegramNetworkError
 
 from app.ai.client import GigaChatClient
 from app.bot.handlers import register_handlers
@@ -34,7 +35,12 @@ async def start_bot() -> None:
     register_handlers(dispatcher, report_service, recommendation_service)
 
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+        except TelegramNetworkError:
+            logging.warning(
+                "Could not delete Telegram webhook before polling; continuing startup."
+            )
         await dispatcher.start_polling(
             bot,
             allowed_updates=dispatcher.resolve_used_update_types(),

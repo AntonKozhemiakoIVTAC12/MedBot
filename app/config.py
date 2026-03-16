@@ -60,6 +60,7 @@ class Settings(BaseModel):
         default=30.0,
         alias="GIGACHAT_TIMEOUT_SECONDS",
     )
+    gigachat_verify_ssl: bool = Field(default=True, alias="GIGACHAT_VERIFY_SSL")
 
     @property
     def mail_allowed_senders_list(self) -> list[str]:

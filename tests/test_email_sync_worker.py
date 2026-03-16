@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import imaplib
 import tempfile
 import unittest
 from datetime import datetime
@@ -19,6 +20,33 @@ from app.db import (
 )
 from app.mail.sync import EmailSyncWorker, FetchedAttachment, FetchedEmail
 from app.parsers import ParsedPdf
+
+
+class _FakeImapClient:
+    def __init__(self, *, abort_on_fetch: bool, raw_message: bytes) -> None:
+        self._abort_on_fetch = abort_on_fetch
+        self._raw_message = raw_message
+
+    def login(self, username: str, password: str):
+        return "OK", [b"logged in"]
+
+    def select(self, folder: str):
+        return "OK", [b"1"]
+
+    def uid(self, command: str, *args):
+        if command == "search":
+            return "OK", [b"100"]
+        if command == "fetch":
+            if self._abort_on_fetch:
+                raise imaplib.IMAP4.abort("command: UID => socket error: EOF")
+            return "OK", [(b"100 (BODY[] {1})", self._raw_message)]
+        raise AssertionError(f"Unexpected IMAP command: {command}")
+
+    def close(self) -> None:
+        return None
+
+    def logout(self) -> None:
+        return None
 
 
 class _FakePdfParser:
@@ -132,17 +160,9 @@ class EmailSyncWorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attachments[0].parse_status, AttachmentParseStatus.PARSED)
         self.assertEqual(attachments[1].parse_status, AttachmentParseStatus.PARSED)
 
-    async def test_uses_filename_fallback_only_for_existing_family_member(self) -> None:
+    async def test_creates_family_member_from_filename_fallback_once(self) -> None:
         self.worker._pdf_parser = _FakePdfParser(
             [
-                ParsedPdf(
-                    source_path=Path("first.pdf"),
-                    extracted_text="ЦЫГАНКОВА ТАТЬЯНА ИВАНОВНА\nКлинический анализ крови",
-                    patient_name="Цыганкова Татьяна Ивановна",
-                    report_title="Клинический анализ крови",
-                    report_date=datetime(2025, 12, 3),
-                    report_type=ReportType.BLOOD,
-                ),
                 ParsedPdf(
                     source_path=Path("fallback.pdf"),
                     extracted_text="Скан распознан частично",
@@ -152,6 +172,14 @@ class EmailSyncWorkerTests(unittest.IsolatedAsyncioTestCase):
                     report_type=ReportType.OTHER,
                     needs_manual_review=True,
                 ),
+                ParsedPdf(
+                    source_path=Path("second.pdf"),
+                    extracted_text="ИВАНОВ ИВАН ИВАНОВИЧ\nКлинический анализ крови",
+                    patient_name="Иванов Иван Иванович",
+                    report_title="Клинический анализ крови",
+                    report_date=datetime(2025, 12, 13),
+                    report_type=ReportType.BLOOD,
+                ),
             ]
         )
 
@@ -160,10 +188,10 @@ class EmailSyncWorkerTests(unittest.IsolatedAsyncioTestCase):
                 uid="uid-1",
                 sender="srs@invitro.ru",
                 subject="Лаборатория ИНВИТРО. Результаты анализов.",
-                received_at=datetime(2025, 12, 6, 0, 12),
+                received_at=datetime(2025, 12, 12, 0, 12),
                 attachments=[
                     FetchedAttachment(
-                        filename="872488625_344581031_0_ЦЫГАНКОВА.pdf",
+                        filename="999999999_111111111_0_ИВАНОВ (2).pdf",
                         content=b"fake-pdf-1",
                         checksum="checksum-1",
                     )
@@ -175,10 +203,10 @@ class EmailSyncWorkerTests(unittest.IsolatedAsyncioTestCase):
                 uid="uid-2",
                 sender="srs@invitro.ru",
                 subject="Лаборатория ИНВИТРО. Результаты анализов.",
-                received_at=datetime(2025, 12, 12, 0, 12),
+                received_at=datetime(2025, 12, 13, 0, 12),
                 attachments=[
                     FetchedAttachment(
-                        filename="999999999_111111111_0_ЦЫГАНКОВА.pdf",
+                        filename="999999999_111111112_0_ИВАНОВ.pdf",
                         content=b"fake-pdf-2",
                         checksum="checksum-2",
                     )
@@ -194,13 +222,17 @@ class EmailSyncWorkerTests(unittest.IsolatedAsyncioTestCase):
             ).scalars().all()
 
         self.assertEqual(len(family_members), 1)
+        self.assertEqual(family_members[0].full_name, "Иванов Иван Иванович")
         self.assertEqual(len(reports), 2)
         self.assertEqual(reports[1].family_member_id, family_members[0].id)
-        self.assertEqual(reports[1].recognized_patient_name, "Цыганкова Татьяна Ивановна")
+        self.assertEqual(reports[0].family_member_id, family_members[0].id)
+        self.assertEqual(reports[0].recognized_patient_name, "Иванов")
+        self.assertEqual(reports[1].recognized_patient_name, "Иванов Иван Иванович")
         self.assertEqual(
-            attachments[1].parse_status,
+            attachments[0].parse_status,
             AttachmentParseStatus.NEEDS_MANUAL_REVIEW,
         )
+        self.assertEqual(attachments[1].parse_status, AttachmentParseStatus.PARSED)
 
     async def test_skips_duplicate_attachment_checksum_from_new_email(self) -> None:
         self.worker._pdf_parser = _FakePdfParser(
@@ -249,6 +281,38 @@ class EmailSyncWorkerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(reports), 1)
         self.assertEqual(len(attachments), 1)
+
+    def test_retries_imap_fetch_after_socket_eof(self) -> None:
+        raw_message = (
+            b"From: srs@invitro.ru\r\n"
+            b"Subject: =?UTF-8?B?0JvQsNCx0L7RgNCw0YLQvtGA0LjRjyDQmNCd0JLQmNCi0KDQni4g0KDQtdC3?=\r\n"
+            b" =?UTF-8?B?0YPQu9GM0YLQsNGC0Ysg0LDQvdCw0LvQuNC30L7Qsi4=?=\r\n"
+            b"Date: Mon, 16 Mar 2026 21:18:44 +0300\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b"Content-Type: multipart/mixed; boundary=test-boundary\r\n"
+            b"\r\n"
+            b"--test-boundary\r\n"
+            b"Content-Type: application/pdf; name=\"sample.pdf\"\r\n"
+            b"Content-Disposition: attachment; filename=\"sample.pdf\"\r\n"
+            b"Content-Transfer-Encoding: base64\r\n"
+            b"\r\n"
+            b"ZmFrZS1wZGY=\r\n"
+            b"--test-boundary--\r\n"
+        )
+        clients = iter(
+            [
+                _FakeImapClient(abort_on_fetch=True, raw_message=raw_message),
+                _FakeImapClient(abort_on_fetch=False, raw_message=raw_message),
+            ]
+        )
+        self.worker._create_imap_client = lambda: next(clients)
+
+        fetched = self.worker._fetch_new_messages(set())
+
+        self.assertEqual(len(fetched), 1)
+        self.assertEqual(fetched[0].uid, "100")
+        self.assertEqual(fetched[0].sender, "srs@invitro.ru")
+        self.assertEqual(len(fetched[0].attachments), 1)
 
     def test_accepts_invitro_emails_by_subject_or_sender(self) -> None:
         self.worker.settings.mail_allowed_subject_fragment = "Лаборатория ИНВИТРО. Результаты анализов."
