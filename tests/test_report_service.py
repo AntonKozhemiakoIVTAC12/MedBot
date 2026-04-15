@@ -62,7 +62,7 @@ class ReportServiceTests(unittest.IsolatedAsyncioTestCase):
 
         other_reports = await self.service.list_reports_for_member(self.anna_id, "other")
         self.assertEqual(len(other_reports), 1)
-        self.assertEqual(other_reports[0].title, "scan")
+        self.assertEqual(other_reports[0].title, "Скан без уверенного распознавания.")
 
     async def test_builds_recent_reports_and_report_card(self) -> None:
         recent_reports = await self.service.list_recent_reports(limit=2)
